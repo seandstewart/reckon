@@ -22,7 +22,9 @@ class LocalCache(protos.ProtoCache):
     def __init__(self, target_usage: float = None):
         self._lock = threading.RLock()
         with self._lock:
-            self.TARGET_RATIO = target_usage if target_usage is not None else self.TARGET_RATIO
+            self.TARGET_RATIO = (
+                target_usage if target_usage is not None else self.TARGET_RATIO
+            )
             self._cache = collections.deque()
             self._caches = collections.defaultdict(dict)
             self._locks = collections.defaultdict(threading.RLock)

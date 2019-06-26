@@ -39,8 +39,18 @@ def some_expensive_func(foo: int, bar: int):
     return foo ** bar
 ```
 
-`reckon` will automatically make use of the global cache. If
-you wish to only maintain a cache local to a function you
+`reckon` will automatically make use of the global cache. 
+
+While the global cache is automatically maintained, it may
+be necessary to managed the cache manually. To that purpose,
+reckon provides the following global methods:
+- `reckon.glob.clear`: Clear the global cache.
+- `reckon.glob.shrink`: Shrink the global cache.
+- `reckon.glob.usage`: Check the current usage ratio.
+- `reckon.glob.set_usage`: Set the max memory usage ratio
+  for the global cache.
+
+If you wish to only maintain a cache local to a function you
 can simply pass a flag to the decorator:
 
 ```python
@@ -51,14 +61,28 @@ def some_expensive_func(foo: int, bar: int):
     return foo ** bar
 ```
 
-While the global cache is automatically maintained, it may
-be necessary to managed the cache manually. To that purpose,
-reckon provides the following global methods:
-- `reckon.glob.clear`: Clear the global cache.
-- `reckon.glob.shrink`: Shrink the global cache.
-- `reckon.glob.usage`: Check the current usage ratio.
-- `reckon.glob.set_usage`: Set the max memory usage ratio
-  for the global cache.
+Additionally, if you wish to maintain a cache local to a
+module, you can initialize your own instance of the
+`LocalCache` object:
+
+```python
+import reckon
+
+cache = reckon.local()
+
+@cache.memoize
+def some_expensive_func(foo: int, bar: int):
+    return foo ** bar
+```
+
+The local cache instance maintains the same high-level API
+for management as the global cache:
+
+- `LocalCache.clear`: Clear the local cache.
+- `LocalCache.shrink`: Shrink the local cache.
+- `LocalCache.usage`: Check the current usage ratio.
+- `LocalCache.set_usage`: Set the max memory usage ratio for
+  the local cache.
 
 
 ## Documentation

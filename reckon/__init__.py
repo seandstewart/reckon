@@ -6,7 +6,7 @@ from typing import Callable
 from reckon import glob, loc
 
 
-__all__ = ("glob", "loc", "memoize", "CacheLocale")
+__all__ = ("glob", "loc", "memoize", "CacheLocale", "local")
 
 
 class CacheLocale(str, enum.Enum):
@@ -14,7 +14,12 @@ class CacheLocale(str, enum.Enum):
     LOC = "local"
 
 
-def memoize(_func: Callable = None, *, locale: CacheLocale = CacheLocale.GLOB, max_mem_usage: float = None):
+def memoize(
+    _func: Callable = None,
+    *,
+    locale: CacheLocale = CacheLocale.GLOB,
+    max_mem_usage: float = None
+):
     locale = CacheLocale(locale)
     if locale == CacheLocale.GLOB:
         if max_mem_usage is not None:
@@ -22,3 +27,7 @@ def memoize(_func: Callable = None, *, locale: CacheLocale = CacheLocale.GLOB, m
         return glob.memoize(_func) if _func else glob.memoize
     else:
         return loc.memoize(_func, target_usage=max_mem_usage)
+
+
+def local(max_mem_usage: float = None):
+    return loc.LocalCache(max_mem_usage)

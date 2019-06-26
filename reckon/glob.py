@@ -12,13 +12,7 @@ except ImportError:
 from . import protos
 
 
-__all__ = (
-    "clear",
-    "shrink",
-    "memoize",
-    "usage",
-    "set_usage"
-)
+__all__ = ("clear", "shrink", "memoize", "usage", "set_usage")
 
 
 class GlobalCache(protos.ProtoCache):

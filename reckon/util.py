@@ -19,7 +19,9 @@ _DEFAULT_SIZE_HANDLERS = MappingProxyType(
 )
 
 
-def size(o, *, handlers: Mapping[Type, Callable] = None, verbose: bool = False) -> float:
+def size(
+    o, *, handlers: Mapping[Type, Callable] = None, verbose: bool = False
+) -> float:
     """Returns the approximate memory footprint an object and all of its contents.
 
     Other Parameters
