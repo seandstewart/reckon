@@ -19,9 +19,7 @@ _DEFAULT_SIZE_HANDLERS = MappingProxyType(
 )
 
 
-def size(
-    o, *, handlers: Mapping[Type, Callable] = None, verbose: bool = False
-) -> float:
+def size(o, *, handlers: Mapping[Type, Callable] = None, verbose: bool = False) -> int:
     """Returns the approximate memory footprint an object and all of its contents.
 
     Other Parameters
@@ -35,7 +33,7 @@ def size(
     seen = set()  # track which object id's have already been seen
     default_size = getsizeof(0)  # estimate sizeof object without __sizeof__
 
-    def sizeof(o: Any) -> float:
+    def sizeof(o: Any) -> int:
         if id(o) in seen:  # do not double count the same object
             return 0
 

@@ -4,9 +4,10 @@ import enum
 from typing import Callable
 
 from reckon import glob, loc
+from reckon.util import size
 
 
-__all__ = ("glob", "loc", "memoize", "CacheLocale", "local")
+__all__ = ("glob", "loc", "memoize", "CacheLocale", "local", "size")
 
 
 class CacheLocale(str, enum.Enum):

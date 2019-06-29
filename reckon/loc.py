@@ -25,12 +25,17 @@ class LocalCache(protos.ProtoCache):
             self.TARGET_RATIO = (
                 target_usage if target_usage is not None else self.TARGET_RATIO
             )
-            self._cache = collections.deque()
-            self._caches = collections.defaultdict(dict)
+            self._cache = dict()
             self._locks = collections.defaultdict(threading.RLock)
+            self._hits = 0
+            self._misses = 0
 
+    __getitem__ = protos.cache_getitem
+    get = protos.cache_get
+    info = protos.cache_info
     clear = protos.clear_cache
     shrink = protos.shrink_cache
+    size = protos.cache_size
     usage = protos.memory_usage_ratio
     memoize = protos.memoize
     set_target_usage = protos.set_target_memory_use_ratio

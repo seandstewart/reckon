@@ -8,9 +8,7 @@ import inspect
 import time
 import threading
 from collections import deque
-from types import MappingProxyType
 from typing import (
-    Deque,
     Dict,
     Hashable,
     Any,
@@ -20,6 +18,8 @@ from typing import (
     Union,
     Type,
     DefaultDict,
+    NamedTuple,
+    FrozenSet,
 )
 
 import psutil
@@ -27,6 +27,7 @@ import psutil
 from .util import size
 
 
+@functools.total_ordering
 @dataclasses.dataclass
 class CacheEntry:
     func: Callable
@@ -44,13 +45,6 @@ class CacheEntry:
             self.time_to_expire = None
             self.update_time_to_expire()
             self.size = size(self.result)
-
-    def delete(self):
-        with self.lock:
-            del self.func._cache[self.key]
-
-    def __del__(self):
-        self.delete()
 
     def __eq__(self, other):
         with self.lock:
@@ -102,14 +96,40 @@ class CacheEntry:
             return self.result
 
 
+class CacheInfo(NamedTuple):
+    entries: int
+    size: float
+    usage: float
+    max: float
+    hits: int
+    misses: int
+
+
 class ProtoCache(abc.ABC):
     """An abstract class for implementing a thread-safe cache."""
 
     TARGET_RATIO = 1.0
-    _cache: Deque[CacheEntry]
     _lock: threading.RLock
-    _caches: DefaultDict[Callable, Dict[Hashable, CacheEntry]]
-    _locks = DefaultDict[Hashable, threading.RLock]
+    _cache: Dict[FrozenSet[Union[Callable, Tuple[Hashable, ...]]], CacheEntry]
+    _locks: DefaultDict[Hashable, threading.RLock]
+    _hits: int
+    _misses: int
+
+    @abc.abstractmethod
+    def __getitem__(self, key: Hashable) -> CacheEntry:
+        pass
+
+    @abc.abstractmethod
+    def get(self, key: Hashable, default: CacheEntry = None) -> Optional[CacheEntry]:
+        pass
+
+    @abc.abstractmethod
+    def size(self) -> int:
+        pass
+
+    @abc.abstractmethod
+    def info(self) -> CacheInfo:
+        pass
 
     @abc.abstractmethod
     def usage(self) -> float:
@@ -133,74 +153,136 @@ class ProtoCache(abc.ABC):
 
 
 CacheType = Union[ProtoCache, Type[ProtoCache]]
+# Seriously, we should never block for more than a millisecond.
+_MAX_SHRINK_TIME = 0.001
 
 
-def shrink_cache(cls_or_instance: CacheType, target_usage: float = None):
+def _should_shrink(
+    current: float, target: float, start: float, instance: CacheType
+) -> bool:
+    return (
+        (current is None or current > target)
+        and time.time() - start < _MAX_SHRINK_TIME
+        and instance._cache
+    )
+
+
+def cache_info(instance: CacheType) -> CacheInfo:
+    return CacheInfo(
+        entries=len(instance._cache),
+        size=instance.size(),
+        usage=instance.usage(),
+        max=instance.TARGET_RATIO,
+        hits=instance._hits,
+        misses=instance._misses,
+    )
+
+
+def cache_getitem(instance: CacheType, key: Hashable) -> CacheEntry:
+    return instance._cache.__getitem__(key)
+
+
+def cache_get(
+    instance: CacheType, key: Hashable, default: CacheEntry = None
+) -> Optional[CacheEntry]:
+    return instance._cache.get(key, default=default)
+
+
+def cache_size(instance: CacheType) -> int:
+    return size(instance) + size(instance._cache)
+
+
+def shrink_cache(instance: CacheType, target_usage: float = None):
     """Shrink the cache until the pct avail memory is under the target usage.
 
     Calculate the current size of our global cache, get the current size of free memory,
     and delete cache entries until the ratio of cache size to free memory is under the
     target ratio.
     """
-    cleanup = False
-    if not target_usage:
-        target_usage = cls_or_instance.TARGET_RATIO
+    target_usage = target_usage or instance.TARGET_RATIO
+    should_delete = functools.partial(
+        _should_shrink, target=target_usage, start=time.time(), instance=instance
+    )
 
-    with cls_or_instance._lock:
-        mem_ratio = cls_or_instance.usage()
-        if mem_ratio > target_usage:
-            cleanup = True
-            cls_or_instance._cache = deque(
-                sorted(cls_or_instance._cache, key=lambda i: i.score, reverse=True)
-            )
-        start = time.time()
+    with instance._lock:
+        # Localizing variables for faster access in the while loop.
+        cacheusage = instance.usage
+        mem_ratio = cacheusage()
+        entries = deque(sorted(instance._cache.values()))
+        cleanup = mem_ratio > target_usage
+        entriespop = entries.popleft
+        cachepop = instance._cache.pop
 
-        def should_delete(mem_usage):
-            return (
-                (mem_usage is None or mem_usage > target_usage)
-                and time.time() - start < 1
-                and cls_or_instance._cache
-            )
+        while entries and should_delete(mem_ratio):
+            entry = entriespop()
+            cachepop(entry.key)
+            del entry
+            mem_ratio = cacheusage()
 
-        while should_delete(cls_or_instance.usage()):
-            try:
-                cls_or_instance._cache.pop().delete()
-            except IndexError:
-                break
-        if cleanup:
-            gc.collect()
+    if cleanup:
+        gc.collect()
 
 
-def memory_usage_ratio(cls_or_instance: CacheType):
-    """
-    Calculate the ratio of used RAM to available RAM.
+_get_mem = psutil.virtual_memory
+
+
+def memory_usage_ratio(instance: CacheType):
+    """Calculate the ratio of used RAM to available RAM.
+
     The ratio is designed to reserve at least a tenth of available
     system memory no matter what.
     """
-    with cls_or_instance._lock:
-        ratio = float(
-            1.0
-            * size(cls_or_instance._cache)
-            / (psutil.virtual_memory().available - (psutil.virtual_memory().total / 10))
-        )
+    with instance._lock:
+        mem = _get_mem()
+        ratio = float(size(instance._cache) / (mem.available - (mem.total / 10)))
         return None if ratio < 0 else ratio
 
 
-def clear_cache(cls_or_instance: CacheType):
+def clear_cache(instance: CacheType):
+    """Clear all of the existing cache entries."""
+    with instance._lock:
+        # Localizing variables for faster access in the while loop.
+        instance._cache.clear()
+        instance._misses = 0
+        instance._hits = 0
+        gc.collect()
+
+
+def set_target_memory_use_ratio(instance: CacheType, ratio: float):
+    """Set the target ratio to maintain.
+
+    Keep in mind, setting this too low could result in effectively no cache usage.
     """
-    Clear all of the existing cache entries.
-    """
-    with cls_or_instance._lock:
-        while cls_or_instance._cache:
-            cls_or_instance._cache.pop().delete()
+    with instance._lock:
+        instance.target_memory_use_ratio = ratio
 
 
-def set_target_memory_use_ratio(cls_or_instance: CacheType, ratio: float):
-    with cls_or_instance._lock:
-        cls_or_instance.target_memory_use_ratio = ratio
+def _create_entry(
+    func: Callable,
+    key: FrozenSet,
+    args: Tuple[Hashable, ...],
+    kwargs: Dict[str, Any],
+    *,
+    expiration: int = None
+) -> CacheEntry:
+    start = time.time()
+    result = func(*args, **kwargs)
+    end = time.time()
+    duration = end - start
+
+    entry = CacheEntry(
+        func=func,
+        key=key,
+        duration=duration,
+        result=result,
+        expiration=expiration,
+        args=args,
+        kwargs=kwargs,
+    )
+    return entry
 
 
-def memoize(cls_or_instance: CacheType, func: Callable) -> Callable:
+def memoize(instance: CacheType, func: Callable) -> Callable:
     """
     Cache the results of calling func with args and kw. Return cached
     results if possible. Maintain a dynamically sized cache based on
@@ -208,44 +290,30 @@ def memoize(cls_or_instance: CacheType, func: Callable) -> Callable:
     You probably should use the memoized decorator instead of calling this
     directly.
     """
-    func.cache = MappingProxyType(cls_or_instance._caches[func])
+    func.cache = instance
 
     @functools.wraps(func)
     def _memoized(*args, **kwargs) -> Any:
 
-        with cls_or_instance._locks[func], cls_or_instance._lock:
-
+        with instance._lock:
             try:
                 sig = inspect.signature(func)
                 bound = sig.bind(*args, **kwargs)
-                key = frozenset(bound.arguments.items())
-                cache = cls_or_instance._caches[func]
-                if key in cache:
-                    result = cache[key].res
-                    cls_or_instance.shrink()
-                    return result
+                key = hash(frozenset(set(bound.arguments.items()) | {func}))
             # received an unhashable input, can't cache this.
             except TypeError:
-                result = func(*args, **kwargs)
-                return result
+                instance._misses += 1
+                return func(*args, **kwargs)
 
-            start = time.time()
-            result = func(*args, **kwargs)
-            end = time.time()
-            duration = end - start
-
-            entry = CacheEntry(
-                func=func,
-                key=key,
-                duration=duration,
-                result=result,
-                expiration=kwargs.get("expiration"),
-                args=args,
-                kwargs=kwargs,
-            )
-            cls_or_instance.shrink()
-            cls_or_instance._caches[func][key] = entry
-            cls_or_instance._cache.append(entry)
+            if key in instance._cache:
+                result = instance._cache[key].res
+                instance._hits += 1
+            else:
+                entry = _create_entry(func, key, args, kwargs)
+                instance._cache[key] = entry
+                result = entry.res
+                instance._misses += 1
+            instance.shrink()
 
             return result
 
