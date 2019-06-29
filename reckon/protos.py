@@ -2,6 +2,7 @@
 # -*- coding: UTF-8 -*-
 import abc
 import dataclasses
+import enum
 import functools
 import gc
 import inspect
@@ -19,7 +20,6 @@ from typing import (
     Type,
     DefaultDict,
     NamedTuple,
-    FrozenSet,
 )
 
 import psutil
@@ -27,9 +27,24 @@ import psutil
 from .util import size
 
 
+class CacheStrategy(str, enum.Enum):
+    """An enumeration of the different caching strategies."""
+
+    TTL = "ttl"  # doc: Use a 'time-to-live' caching strategy.
+    LRU = "lru"  # doc: Use a 'least-recently-used' caching strategy.
+    DYN = (
+        "dynamic"
+    )  # doc: Use a dynamic caching strategy based upon size of the cache and overall memory usage.
+
+
+_DEFAULT_TTL_SECS = 300
+
+
 @functools.total_ordering
 @dataclasses.dataclass
 class CacheEntry:
+    """An entry in the cache."""
+
     func: Callable
     key: Hashable
     duration: float
@@ -38,13 +53,21 @@ class CacheEntry:
     kwargs: Dict[str, Any]
     expiration: Optional[int] = None
     lock: threading.RLock = dataclasses.field(default_factory=threading.RLock)
+    strategy: CacheStrategy = CacheStrategy.DYN
 
     def __post_init__(self):
         with self.lock:
             self.last_used = time.time()
             self.time_to_expire = None
-            self.update_time_to_expire()
+            if self.strategy == CacheStrategy.TTL and not self.expiration:
+                self.expiration = _DEFAULT_TTL_SECS
+            self.update_ttl()
             self.size = size(self.result)
+            self._get_score = (
+                self._dynamic_score
+                if self.strategy == CacheStrategy.DYN
+                else self._lru_score
+            )
 
     def __eq__(self, other):
         with self.lock:
@@ -71,32 +94,45 @@ class CacheEntry:
         with self.lock:
             return time.time() - self.last_used
 
+    def _dynamic_score(self) -> float:
+        return (self.size * self.duration) / (self.age ** 2)
+
+    def _lru_score(self) -> float:
+        return self.last_used
+
+    def _get_score(self) -> float:
+        # assigned on init
+        pass
+
     @property
     def score(self) -> float:
         with self.lock:
-            return (self.size * self.duration) / (self.age ** 2)
+            return self._get_score()
 
-    def update_time_to_expire(self):
+    def update_ttl(self):
         if self.expiration:
             self.time_to_expire = time.time() + self.expiration
         else:
             self.time_to_expire = None
 
     def refresh(self):
-        self.recalculate_size()
-        self.update_time_to_expire()
+        if self.strategy == CacheStrategy.DYN:
+            self.recalculate_size()
+        self.update_ttl()
 
     @property
     def res(self) -> Any:
         with self.lock:
-            if self.time_to_expire is not None and time.time() > self.time_to_expire:
+            now = time.time()
+            if self.time_to_expire and now > self.time_to_expire:
                 self.result = self.func(*self.args, **self.kwargs)
                 self.refresh()
-            self.last_used = time.time()
+            self.last_used = now
             return self.result
 
 
 class CacheInfo(NamedTuple):
+    strategy: CacheStrategy
     entries: int
     size: float
     usage: float
@@ -109,8 +145,9 @@ class ProtoCache(abc.ABC):
     """An abstract class for implementing a thread-safe cache."""
 
     TARGET_RATIO = 1.0
+    strategy: CacheStrategy
     _lock: threading.RLock
-    _cache: Dict[FrozenSet[Union[Callable, Tuple[Hashable, ...]]], CacheEntry]
+    _cache: Dict[Hashable, CacheEntry]
     _locks: DefaultDict[Hashable, threading.RLock]
     _hits: int
     _misses: int
@@ -169,6 +206,7 @@ def _should_shrink(
 
 def cache_info(instance: CacheType) -> CacheInfo:
     return CacheInfo(
+        strategy=instance.strategy,
         entries=len(instance._cache),
         size=instance.size(),
         usage=instance.usage(),
@@ -192,14 +230,14 @@ def cache_size(instance: CacheType) -> int:
     return size(instance) + size(instance._cache)
 
 
-def shrink_cache(instance: CacheType, target_usage: float = None):
+def shrink_dynamic_cache(instance: CacheType):
     """Shrink the cache until the pct avail memory is under the target usage.
 
     Calculate the current size of our global cache, get the current size of free memory,
     and delete cache entries until the ratio of cache size to free memory is under the
     target ratio.
     """
-    target_usage = target_usage or instance.TARGET_RATIO
+    target_usage = instance.TARGET_RATIO
     should_delete = functools.partial(
         _should_shrink, target=target_usage, start=time.time(), instance=instance
     )
@@ -221,6 +259,25 @@ def shrink_cache(instance: CacheType, target_usage: float = None):
 
     if cleanup:
         gc.collect()
+
+
+# Using the same algo for now...
+# may change if we decide to do based on num entries rather than size.
+shrink_lru_cache = shrink_dynamic_cache
+
+
+def shrink_ttl_cache(instance: CacheType):
+    # TTL cache is expired on access.
+    pass
+
+
+def get_shrink(instance: CacheType):
+    if instance.strategy == CacheStrategy.DYN:
+        instance.shrink = shrink_dynamic_cache
+    elif instance.strategy == CacheStrategy.TTL:
+        instance.shrink = shrink_ttl_cache
+    else:
+        instance.shrink = shrink_lru_cache
 
 
 _get_mem = psutil.virtual_memory
@@ -249,7 +306,7 @@ def clear_cache(instance: CacheType):
 
 
 def set_target_memory_use_ratio(instance: CacheType, ratio: float):
-    """Set the target ratio to maintain.
+    """Set the target ratio of available memory to maintain.
 
     Keep in mind, setting this too low could result in effectively no cache usage.
     """
@@ -259,7 +316,7 @@ def set_target_memory_use_ratio(instance: CacheType, ratio: float):
 
 def _create_entry(
     func: Callable,
-    key: FrozenSet,
+    key: int,
     args: Tuple[Hashable, ...],
     kwargs: Dict[str, Any],
     *,
@@ -282,11 +339,16 @@ def _create_entry(
     return entry
 
 
-def memoize(instance: CacheType, func: Callable) -> Callable:
-    """
-    Cache the results of calling func with args and kw. Return cached
-    results if possible. Maintain a dynamically sized cache based on
-    function execution time and the available free memory ratio.
+def memoize(instance: CacheType, func: Callable, *, expiration: int = None) -> Callable:
+    """Maintain a dynamically sized cache for memoized function calls.
+
+    Return cached results if possible.
+
+    Entries are sorted by initial execution time and overall size:
+        - Larger results are ranked higher,
+        - Longer execution times are ranked lower,
+        - Entries are evicted from highest to lowest ranking.
+
     You probably should use the memoized decorator instead of calling this
     directly.
     """
@@ -309,7 +371,7 @@ def memoize(instance: CacheType, func: Callable) -> Callable:
                 result = instance._cache[key].res
                 instance._hits += 1
             else:
-                entry = _create_entry(func, key, args, kwargs)
+                entry = _create_entry(func, key, args, kwargs, expiration=expiration)
                 instance._cache[key] = entry
                 result = entry.res
                 instance._misses += 1

@@ -10,7 +10,7 @@ except ImportError:
 from .loc import LocalCache
 
 
-__all__ = ("get", "clear", "shrink", "size", "memoize", "usage", "set_usage")
+__all__ = ("get", "clear", "shrink", "size", "memoize", "usage", "set_usage", "info")
 
 
 cache = LocalCache()

@@ -2,7 +2,7 @@
 # -*- coding: UTF-8 -*-
 from collections import deque
 from itertools import chain
-from sys import getsizeof, stderr
+from sys import getsizeof
 from typing import Mapping, Type, Callable, Any
 from types import MappingProxyType
 
@@ -17,9 +17,10 @@ _DEFAULT_SIZE_HANDLERS = MappingProxyType(
         frozenset: iter,
     }
 )
+_DEFAULT_SIZE = getsizeof(0)  # estimate sizeof object without __sizeof__
 
 
-def size(o, *, handlers: Mapping[Type, Callable] = None, verbose: bool = False) -> int:
+def size(o, *, handlers: Mapping[Type, Callable] = None) -> int:
     """Returns the approximate memory footprint an object and all of its contents.
 
     Other Parameters
@@ -31,17 +32,13 @@ def size(o, *, handlers: Mapping[Type, Callable] = None, verbose: bool = False) 
     """
     handlers = handlers or {}
     seen = set()  # track which object id's have already been seen
-    default_size = getsizeof(0)  # estimate sizeof object without __sizeof__
 
     def sizeof(o: Any) -> int:
         if id(o) in seen:  # do not double count the same object
             return 0
 
         seen.add(id(o))
-        s = getsizeof(o, default_size)
-
-        if verbose:
-            print(s, type(o), repr(o), file=stderr)
+        s = getsizeof(o, _DEFAULT_SIZE)
 
         typ = type(o)
         handler = handlers.get(typ) or _DEFAULT_SIZE_HANDLERS.get(typ)
