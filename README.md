@@ -49,6 +49,8 @@ reckon provides the following global methods:
 - `reckon.glob.usage`: Check the current usage ratio.
 - `reckon.glob.set_usage`: Set the max memory usage ratio
   for the global cache.
+- `reckon.glob.info`: View high-level information about the
+  cache - similar to `functools.lru_cache.cache_info`
 
 If you wish to only maintain a cache local to a function you
 can simply pass a flag to the decorator:
@@ -83,7 +85,11 @@ for management as the global cache:
 - `LocalCache.usage`: Check the current usage ratio.
 - `LocalCache.set_usage`: Set the max memory usage ratio for
   the local cache.
+- `LocalCache.info`: View high-level information about the
+  cache - similar to `functools.lru_cache.cache_info`
 
+All memoized functions have introspection into their cache
+via the `cache` attribute.
 
 ## Documentation
 

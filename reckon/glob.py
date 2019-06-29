@@ -19,5 +19,6 @@ clear = cache.clear
 shrink = cache.shrink
 size = cache.size
 usage = cache.usage
+info = cache.info
 set_usage = cache.set_target_usage
 memoize = cache.memoize
