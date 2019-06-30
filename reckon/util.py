@@ -20,6 +20,21 @@ _DEFAULT_SIZE_HANDLERS = MappingProxyType(
 _DEFAULT_SIZE = getsizeof(0)  # estimate sizeof object without __sizeof__
 
 
+def _sizeof(o: Any, seen: set, handlers: dict) -> int:
+    if id(o) in seen:  # do not double count the same object
+        return 0
+
+    seen.add(id(o))
+    s = getsizeof(o, _DEFAULT_SIZE)
+
+    typ = type(o)
+    handler = handlers.get(typ) or _DEFAULT_SIZE_HANDLERS.get(typ)
+    if handler:
+        s += sum(_sizeof(x, seen, handlers) for x in handler(o))
+
+    return s
+
+
 def size(o, *, handlers: Mapping[Type, Callable] = None) -> int:
     """Returns the approximate memory footprint an object and all of its contents.
 
@@ -33,18 +48,4 @@ def size(o, *, handlers: Mapping[Type, Callable] = None) -> int:
     handlers = handlers or {}
     seen = set()  # track which object id's have already been seen
 
-    def sizeof(o: Any) -> int:
-        if id(o) in seen:  # do not double count the same object
-            return 0
-
-        seen.add(id(o))
-        s = getsizeof(o, _DEFAULT_SIZE)
-
-        typ = type(o)
-        handler = handlers.get(typ) or _DEFAULT_SIZE_HANDLERS.get(typ)
-        if handler:
-            s += sum(map(sizeof, handler(o)))
-
-        return s
-
-    return sizeof(o)
+    return _sizeof(o, seen, handlers)

@@ -44,7 +44,7 @@ HOME = pathlib.Path(__file__).resolve().parent
 LIB = HOME / "reckon"
 ABOUT = About.from_path(LIB / "__about__.py")
 README = (HOME / "README.md").read_text()
-INSTALL_REQUIRES = "psutil"
+INSTALL_REQUIRES = ("psutil",)
 TESTS_REQUIRE = ("pytest",)
 
 

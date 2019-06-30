@@ -34,16 +34,20 @@ class LocalCache(protos.ProtoCache):
             self._hits = 0
             self._misses = 0
             self.strategy = strategy
-            self.shrink = protos.get_shrink(self)
 
     __getitem__ = protos.cache_getitem
     get = protos.cache_get
+    keys = protos.cache_keys
+    values = protos.cache_values
+    items = protos.cache_items
     info = protos.cache_info
     clear = protos.clear_cache
     size = protos.cache_size
     usage = protos.memory_usage_ratio
     memoize = protos.memoize
     set_target_usage = protos.set_target_memory_use_ratio
+    # Assigned on init.
+    shrink = protos.shrink
 
 
 def memoize(
